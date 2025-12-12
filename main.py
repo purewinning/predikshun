@@ -19,6 +19,7 @@ from typing import Dict, Optional
 # Import utility functions
 from utils import (
     fetch_data_from_srating,
+    fetch_espn_games,
     prepare_prediction_features,
     get_feature_columns
 )
@@ -82,21 +83,78 @@ def load_model(sport: str):
 
 def fetch_todays_games(sport_code: str, selected_date: datetime) -> pd.DataFrame:
     """
-    Fetch REAL games for the selected date from srating.io API.
-    NO MOCK DATA - REAL GAMES ONLY.
+    Fetch REAL games for the selected date.
+    - NBA/NFL: Uses ESPN's FREE public API (no key needed!)
+    - CBB/CFB: Uses srating.io API
     
     Args:
         sport_code: 'NBA', 'NFL', 'CBB', or 'CFB'
         selected_date: Date to fetch games for
         
     Returns:
-        DataFrame with real games from the API
+        DataFrame with real games
     """
+    
+    # ============================================================================
+    # NBA AND NFL - USE ESPN API (FREE!)
+    # ============================================================================
+    if sport_code in ['NBA', 'NFL']:
+        try:
+            st.info(f"🔍 Fetching {sport_code} games from ESPN API (FREE!)...")
+            
+            games = fetch_espn_games(sport_code, selected_date)
+            
+            if not games:
+                st.info(f"ℹ️ No {sport_code} games scheduled for {selected_date.strftime('%Y-%m-%d')}")
+                return pd.DataFrame()
+            
+            # Parse ESPN format
+            parsed_games = []
+            for event in games:
+                try:
+                    competition = event.get('competitions', [{}])[0]
+                    competitors = competition.get('competitors', [])
+                    
+                    # Find home and away teams
+                    home_team = None
+                    away_team = None
+                    
+                    for comp in competitors:
+                        if comp.get('homeAway') == 'home':
+                            home_team = comp.get('team', {}).get('displayName', 'Unknown')
+                        elif comp.get('homeAway') == 'away':
+                            away_team = comp.get('team', {}).get('displayName', 'Unknown')
+                    
+                    if home_team and away_team:
+                        parsed_games.append({
+                            'home_team': home_team,
+                            'away_team': away_team,
+                            'game_time': event.get('date', 'Unknown'),
+                            'status': event.get('status', {}).get('type', {}).get('description', 'Unknown')
+                        })
+                        
+                except Exception as e:
+                    continue
+            
+            if not parsed_games:
+                st.warning(f"⚠️ Could not parse {sport_code} games from ESPN")
+                return pd.DataFrame()
+            
+            st.success(f"✅ Found {len(parsed_games)} {sport_code} game(s) from ESPN!")
+            return pd.DataFrame(parsed_games)
+            
+        except Exception as e:
+            st.error(f"❌ ESPN API Error: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+            return pd.DataFrame()
+    
+    # ============================================================================
+    # COLLEGE SPORTS (CBB/CFB) - USE SRATING API
+    # ============================================================================
     try:
         # Map sport codes to API organization codes
         sport_to_org_code = {
-            'NBA': ['NBA', 'nba'],
-            'NFL': ['NFL', 'nfl'],
             'CBB': ['NCAAM', 'CBB', 'NCAA Basketball', 'ncaam', 'cbb'],
             'CFB': ['CFB', 'NCAAF', 'NCAA Football', 'cfb', 'ncaaf']
         }
@@ -209,6 +267,7 @@ def fetch_todays_games(sport_code: str, selected_date: datetime) -> pd.DataFrame
         import traceback
         st.code(traceback.format_exc())
         return pd.DataFrame()
+
 
 
 
