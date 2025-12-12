@@ -903,28 +903,31 @@ def create_win_prob_vs_ev_scatter(all_plays_df: pd.DataFrame):
         return None
     
     # Calculate win prob for predicted winner
-    all_plays_df['winner_prob'] = all_plays_df.apply(
+    all_plays_df_copy = all_plays_df.copy()
+    all_plays_df_copy['winner_prob'] = all_plays_df_copy.apply(
         lambda row: row['home_win_prob'] if row['predicted_winner'] == row['home_team'] else row['away_win_prob'],
         axis=1
     )
     
+    # Convert to percentage for display
+    all_plays_df_copy['winner_prob_pct'] = all_plays_df_copy['winner_prob'] * 100
+    
     fig = px.scatter(
-        all_plays_df,
-        x='winner_prob',
+        all_plays_df_copy,
+        x='winner_prob_pct',
         y='expected_value',
         size='bet_units',
         color='sport',
         hover_data=['away_team', 'home_team', 'predicted_winner', 'american_odds'],
         title='Win Probability vs Expected Value',
         labels={
-            'winner_prob': 'Win Probability (%)',
+            'winner_prob_pct': 'Win Probability (%)',
             'expected_value': 'Expected Value (%)',
             'bet_units': 'Bet Units'
         }
     )
     
-    fig.update_xaxis(tickformat='.0%')
-    fig.add_hline(y=0, line_dash="dash", line_color="red")
+    fig.add_hline(y=0, line_dash="dash", line_color="red", annotation_text="Break-even")
     fig.add_hline(y=5, line_dash="dash", line_color="green", annotation_text="Elite EV (5%+)")
     
     fig.update_layout(height=500)
