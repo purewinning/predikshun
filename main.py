@@ -1523,6 +1523,78 @@ def display_daily_ev_dashboard(all_plays_df: pd.DataFrame):
         """)
 
 
+def display_predictions_table(predictions_df: pd.DataFrame):
+    """Display ALL predictions with professional betting metrics."""
+    if predictions_df.empty:
+        st.info("No games found for the selected date.")
+        return
+    
+    st.subheader("📋 All Games with Betting Analysis")
+    
+    # Prepare display dataframe with key betting metrics
+    display_cols = [
+        'away_team', 'home_team', 'predicted_winner', 'american_odds',
+        'home_win_prob', 'expected_value', 'bet_units', 'value_rating'
+    ]
+    
+    # Only include columns that exist
+    display_cols = [col for col in display_cols if col in predictions_df.columns]
+    display_df = predictions_df[display_cols].copy()
+    
+    # Format for display
+    if 'home_win_prob' in display_df.columns:
+        display_df['Win %'] = display_df['home_win_prob'].apply(lambda x: f"{x*100:.1f}%")
+        display_df = display_df.drop('home_win_prob', axis=1)
+    
+    if 'american_odds' in display_df.columns:
+        display_df['Odds'] = display_df['american_odds'].apply(lambda x: f"{x:+d}")
+        display_df = display_df.drop('american_odds', axis=1)
+    
+    if 'expected_value' in display_df.columns:
+        display_df['EV'] = display_df['expected_value'].apply(lambda x: f"+{x:.1f}%" if x > 0 else f"{x:.1f}%")
+        display_df = display_df.drop('expected_value', axis=1)
+    
+    if 'bet_units' in display_df.columns:
+        display_df['Units'] = display_df['bet_units'].apply(lambda x: f"{x:.0f}U" if x > 0 else "Pass")
+        display_df = display_df.drop('bet_units', axis=1)
+    
+    # Rename remaining columns
+    column_names = {
+        'away_team': 'Away',
+        'home_team': 'Home',
+        'predicted_winner': 'Pick',
+        'value_rating': 'Value'
+    }
+    display_df = display_df.rename(columns=column_names)
+    
+    # Reorder columns for better display
+    desired_order = ['Away', 'Home', 'Pick', 'Odds', 'Win %', 'EV', 'Units', 'Value']
+    display_df = display_df[[col for col in desired_order if col in display_df.columns]]
+    
+    # Display with styling
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        height=400
+    )
+    
+    # Add legend
+    with st.expander("📖 How to Read This Table"):
+        st.markdown("""
+        **Pick**: Our predicted winner  
+        **Odds**: American odds format (+150 = underdog, -150 = favorite)  
+        **Win %**: Our calculated win probability  
+        **EV**: Expected Value - positive means profitable long-term  
+        **Units**: Recommended bet size (0 = pass, 1 = small, 2-3 = strong)  
+        **Value**: 🔥 MAX = best plays, ⭐⭐⭐ = good, ⭐ = slight edge, 🚫 = no edge  
+        
+        **Bankroll Management**: 1 unit = 1% of your total bankroll  
+        **Kelly Criterion**: Used to calculate optimal bet sizing  
+        **Max Bet**: Never bet more than 3 units on a single game  
+        """)
+
+
 def display_high_confidence_picks(predictions_df: pd.DataFrame, threshold: float = 0.65):
     """Display high-confidence picks with PROFESSIONAL betting metrics."""
     high_confidence = predictions_df[predictions_df['confidence'] >= threshold].copy()
