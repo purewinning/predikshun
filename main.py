@@ -641,7 +641,657 @@ def display_sidebar():
         return sport, selected_date, min_confidence, show_all
 
 
-def display_predictions_table(predictions_df: pd.DataFrame):
+def scan_all_sports_for_ev(selected_date: datetime) -> pd.DataFrame:
+    """
+    DAILY EV SCANNER - Scans ALL sports for positive EV opportunities.
+    
+    This is the money-maker. Finds the best bets across NBA, NFL, CBB, CFB.
+    Returns ranked list of +EV plays.
+    """
+    all_plays = []
+    
+    sports = ['NBA', 'NFL', 'CBB', 'CFB']
+    
+    with st.spinner("🔍 Scanning all sports for +EV opportunities..."):
+        for sport in sports:
+            try:
+                # Load model
+                model = load_model(sport)
+                
+                # Fetch games
+                games_df = fetch_todays_games(sport, selected_date)
+                
+                if not games_df.empty:
+                    # Generate predictions
+                    predictions = generate_predictions(games_df, model, sport)
+                    
+                    # Add sport identifier
+                    predictions['sport'] = sport
+                    
+                    # Filter for positive EV only
+                    positive_ev = predictions[predictions['expected_value'] > 0].copy()
+                    
+                    if not positive_ev.empty:
+                        all_plays.append(positive_ev)
+                        st.success(f"✅ {sport}: Found {len(positive_ev)} +EV opportunities")
+                    else:
+                        st.info(f"ℹ️ {sport}: No +EV plays found")
+                else:
+                    st.info(f"ℹ️ {sport}: No games today")
+                    
+            except Exception as e:
+                st.warning(f"⚠️ {sport}: {str(e)}")
+                continue
+    
+    if not all_plays:
+        return pd.DataFrame()
+    
+    # Combine all sports
+    all_plays_df = pd.concat(all_plays, ignore_index=True)
+    
+    # Sort by EV (best opportunities first)
+    all_plays_df = all_plays_df.sort_values('expected_value', ascending=False)
+    
+    return all_plays_df
+
+
+def create_ev_heatmap(all_plays_df: pd.DataFrame):
+    """Create a heatmap showing EV by sport and confidence level."""
+    import plotly.express as px
+    import plotly.graph_objects as go
+    
+    if all_plays_df.empty:
+        return None
+    
+    # Create bins for confidence
+    all_plays_df['confidence_bin'] = pd.cut(
+        all_plays_df['confidence'], 
+        bins=[0, 0.5, 0.65, 0.75, 1.0],
+        labels=['Low (30-50%)', 'Medium (50-65%)', 'High (65-75%)', 'Very High (75%+)']
+    )
+    
+    # Pivot for heatmap
+    heatmap_data = all_plays_df.pivot_table(
+        values='expected_value',
+        index='sport',
+        columns='confidence_bin',
+        aggfunc='mean',
+        fill_value=0
+    )
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=heatmap_data.values,
+        x=heatmap_data.columns,
+        y=heatmap_data.index,
+        colorscale='RdYlGn',
+        text=heatmap_data.values,
+        texttemplate='%{text:.1f}%',
+        textfont={"size": 14},
+        colorbar=dict(title="EV %")
+    ))
+    
+    fig.update_layout(
+        title="Expected Value Heatmap by Sport & Confidence",
+        xaxis_title="Confidence Level",
+        yaxis_title="Sport",
+        height=400
+    )
+    
+    return fig
+
+
+def create_profit_projection_chart(all_plays_df: pd.DataFrame, bankroll: float = 1000):
+    """Create profit projection over time using Monte Carlo simulation."""
+    import plotly.graph_objects as go
+    
+    if all_plays_df.empty:
+        return None
+    
+    # Monte Carlo: simulate 1000 possible outcomes
+    simulations = []
+    n_sims = 100
+    
+    for sim in range(n_sims):
+        bankroll_sim = bankroll
+        bankroll_history = [bankroll]
+        
+        for idx, play in all_plays_df.iterrows():
+            bet_amount = bankroll_sim * (play['bet_units'] / 100)
+            
+            # Simulate win/loss
+            win_prob = play['home_win_prob'] if play['predicted_winner'] == play['home_team'] else play['away_win_prob']
+            
+            if np.random.random() < win_prob:
+                # Win
+                if play['american_odds'] < 0:
+                    profit = bet_amount * (100 / abs(play['american_odds']))
+                else:
+                    profit = bet_amount * (play['american_odds'] / 100)
+                bankroll_sim += profit
+            else:
+                # Loss
+                bankroll_sim -= bet_amount
+            
+            bankroll_history.append(bankroll_sim)
+        
+        simulations.append(bankroll_history)
+    
+    # Calculate percentiles
+    simulations_array = np.array(simulations)
+    median = np.median(simulations_array, axis=0)
+    p25 = np.percentile(simulations_array, 25, axis=0)
+    p75 = np.percentile(simulations_array, 75, axis=0)
+    p10 = np.percentile(simulations_array, 10, axis=0)
+    p90 = np.percentile(simulations_array, 90, axis=0)
+    
+    x = list(range(len(median)))
+    
+    fig = go.Figure()
+    
+    # Add confidence bands
+    fig.add_trace(go.Scatter(
+        x=x, y=p90,
+        fill=None,
+        mode='lines',
+        line_color='rgba(0,176,246,0)',
+        showlegend=False
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=x, y=p10,
+        fill='tonexty',
+        mode='lines',
+        line_color='rgba(0,176,246,0)',
+        name='80% Range',
+        fillcolor='rgba(0,176,246,0.2)'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=x, y=p75,
+        fill=None,
+        mode='lines',
+        line_color='rgba(0,100,200,0)',
+        showlegend=False
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=x, y=p25,
+        fill='tonexty',
+        mode='lines',
+        line_color='rgba(0,100,200,0)',
+        name='50% Range',
+        fillcolor='rgba(0,100,200,0.3)'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=x, y=median,
+        mode='lines',
+        name='Expected Path',
+        line=dict(color='green', width=3)
+    ))
+    
+    # Add starting point
+    fig.add_hline(y=bankroll, line_dash="dash", line_color="gray", annotation_text="Starting Bankroll")
+    
+    fig.update_layout(
+        title=f"Bankroll Projection (100 Simulations)",
+        xaxis_title="Bet Number",
+        yaxis_title="Bankroll ($)",
+        height=500,
+        hovermode='x unified'
+    )
+    
+    return fig, median[-1]
+
+
+def create_ev_distribution(all_plays_df: pd.DataFrame):
+    """Create distribution chart of EV opportunities."""
+    import plotly.express as px
+    
+    if all_plays_df.empty:
+        return None
+    
+    fig = px.histogram(
+        all_plays_df,
+        x='expected_value',
+        nbins=20,
+        color='sport',
+        title='Distribution of Expected Value Opportunities',
+        labels={'expected_value': 'Expected Value (%)', 'count': 'Number of Bets'},
+        barmode='overlay',
+        opacity=0.7
+    )
+    
+    fig.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="Break-even")
+    fig.add_vline(x=all_plays_df['expected_value'].mean(), line_dash="dash", line_color="green", annotation_text="Avg EV")
+    
+    fig.update_layout(height=400)
+    
+    return fig
+
+
+def create_unit_allocation_chart(all_plays_df: pd.DataFrame):
+    """Create chart showing unit allocation by sport."""
+    import plotly.express as px
+    
+    if all_plays_df.empty:
+        return None
+    
+    sport_units = all_plays_df.groupby('sport')['bet_units'].sum().reset_index()
+    sport_units.columns = ['Sport', 'Total Units']
+    
+    fig = px.pie(
+        sport_units,
+        values='Total Units',
+        names='Sport',
+        title='Unit Allocation by Sport',
+        hole=0.4,
+        color_discrete_sequence=px.colors.qualitative.Set3
+    )
+    
+    fig.update_traces(textposition='inside', textinfo='percent+label+value')
+    fig.update_layout(height=400)
+    
+    return fig
+
+
+def create_win_prob_vs_ev_scatter(all_plays_df: pd.DataFrame):
+    """Create scatter plot of win probability vs EV."""
+    import plotly.express as px
+    
+    if all_plays_df.empty:
+        return None
+    
+    # Calculate win prob for predicted winner
+    all_plays_df['winner_prob'] = all_plays_df.apply(
+        lambda row: row['home_win_prob'] if row['predicted_winner'] == row['home_team'] else row['away_win_prob'],
+        axis=1
+    )
+    
+    fig = px.scatter(
+        all_plays_df,
+        x='winner_prob',
+        y='expected_value',
+        size='bet_units',
+        color='sport',
+        hover_data=['away_team', 'home_team', 'predicted_winner', 'american_odds'],
+        title='Win Probability vs Expected Value',
+        labels={
+            'winner_prob': 'Win Probability (%)',
+            'expected_value': 'Expected Value (%)',
+            'bet_units': 'Bet Units'
+        }
+    )
+    
+    fig.update_xaxis(tickformat='.0%')
+    fig.add_hline(y=0, line_dash="dash", line_color="red")
+    fig.add_hline(y=5, line_dash="dash", line_color="green", annotation_text="Elite EV (5%+)")
+    
+    fig.update_layout(height=500)
+    
+    return fig
+
+
+def generate_ai_insights(all_plays_df: pd.DataFrame) -> dict:
+    """
+    Use ML/statistical analysis to generate actionable insights.
+    """
+    insights = {
+        'key_findings': [],
+        'warnings': [],
+        'opportunities': [],
+        'risk_assessment': ''
+    }
+    
+    if all_plays_df.empty:
+        insights['warnings'].append("No +EV opportunities found today.")
+        return insights
+    
+    # Analyze EV distribution
+    avg_ev = all_plays_df['expected_value'].mean()
+    max_ev = all_plays_df['expected_value'].max()
+    total_units = all_plays_df['bet_units'].sum()
+    
+    # Key Findings
+    if max_ev >= 7:
+        insights['key_findings'].append(f"🔥 ELITE opportunity detected: {max_ev:.1f}% EV - don't miss this!")
+    
+    if avg_ev >= 4:
+        insights['key_findings'].append(f"💎 Above-average day: {avg_ev:.1f}% average EV across plays")
+    elif avg_ev < 2:
+        insights['key_findings'].append(f"⚠️ Below-average edge: {avg_ev:.1f}% avg EV - be selective")
+    
+    # Sport concentration
+    sport_counts = all_plays_df['sport'].value_counts()
+    dominant_sport = sport_counts.index[0]
+    if sport_counts.iloc[0] > len(all_plays_df) * 0.5:
+        insights['warnings'].append(f"⚠️ {sport_counts.iloc[0]} of {len(all_plays_df)} plays are {dominant_sport} - lack of diversification")
+    
+    # Unit risk assessment
+    if total_units > 15:
+        insights['warnings'].append(f"⚠️ High total risk: {total_units:.1f} units. Consider reducing exposure.")
+        insights['risk_assessment'] = "HIGH RISK"
+    elif total_units > 10:
+        insights['warnings'].append(f"⚡ Moderate-high risk: {total_units:.1f} units.")
+        insights['risk_assessment'] = "MODERATE-HIGH"
+    else:
+        insights['risk_assessment'] = "CONSERVATIVE"
+    
+    # Opportunities
+    max_plays = all_plays_df[all_plays_df['value_rating'] == '🔥 MAX']
+    if len(max_plays) > 0:
+        insights['opportunities'].append(f"💰 {len(max_plays)} MAX value play(s) - prioritize these")
+    
+    # Sharp money correlation
+    if 'sharp_indicator' in all_plays_df.columns:
+        sharp_count = len(all_plays_df[all_plays_df['sharp_indicator'] == 'Sharp Money'])
+        if sharp_count >= len(all_plays_df) * 0.6:
+            insights['opportunities'].append(f"✅ {sharp_count}/{len(all_plays_df)} plays align with sharp money")
+    
+    # Confidence analysis
+    avg_confidence = all_plays_df['confidence'].mean()
+    if avg_confidence > 0.65:
+        insights['key_findings'].append(f"💪 High conviction slate: {avg_confidence*100:.0f}% avg confidence")
+    
+    return insights
+
+
+def display_daily_ev_dashboard(all_plays_df: pd.DataFrame):
+    """
+    ELITE DASHBOARD with advanced visualizations and AI insights.
+    """
+    if all_plays_df.empty:
+        st.warning("🚫 No +EV opportunities found across any sport today.")
+        st.info("Check back later or try a different date. Not every day has value.")
+        return
+    
+    st.success(f"🎯 Found {len(all_plays_df)} +EV Opportunities Today!")
+    
+    # ============================================================================
+    # AI-POWERED INSIGHTS - MACHINE LEARNING ANALYSIS
+    # ============================================================================
+    st.markdown("## 🤖 AI-Powered Insights")
+    
+    insights = generate_ai_insights(all_plays_df)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 💡 Key Findings")
+        if insights['key_findings']:
+            for finding in insights['key_findings']:
+                st.info(finding)
+        else:
+            st.info("Standard EV opportunities detected")
+    
+    with col2:
+        st.markdown("### ⚠️ Risk Warnings")
+        if insights['warnings']:
+            for warning in insights['warnings']:
+                st.warning(warning)
+        else:
+            st.success("✅ No significant risk warnings")
+    
+    if insights['opportunities']:
+        st.markdown("### 🎯 Top Opportunities")
+        for opp in insights['opportunities']:
+            st.success(opp)
+    
+    # Risk badge
+    risk_colors = {
+        'CONSERVATIVE': 'green',
+        'MODERATE-HIGH': 'orange',
+        'HIGH RISK': 'red'
+    }
+    st.markdown(f"**Risk Level:** :{risk_colors.get(insights['risk_assessment'], 'blue')}[{insights['risk_assessment']}]")
+    
+    st.markdown("---")
+    
+    # ============================================================================
+    # SUMMARY METRICS WITH SPARKLINES
+    # ============================================================================
+    st.markdown("## 📊 Performance Metrics")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_ev = all_plays_df['expected_value'].sum()
+        st.metric("Total +EV", f"+{total_ev:.1f}%", help="Combined edge across all plays")
+    
+    with col2:
+        total_units = all_plays_df['bet_units'].sum()
+        st.metric("Total Units", f"{total_units:.1f}U", help="Total recommended action", 
+                 delta=f"{total_units:.1f}% of bankroll")
+    
+    with col3:
+        max_plays = all_plays_df[all_plays_df['value_rating'] == '🔥 MAX']
+        st.metric("MAX Plays", len(max_plays), help="Strongest plays of the day")
+    
+    with col4:
+        avg_ev = all_plays_df['expected_value'].mean()
+        st.metric("Avg EV", f"+{avg_ev:.1f}%", help="Average edge per play")
+    
+    st.markdown("---")
+    
+    # ============================================================================
+    # ADVANCED VISUALIZATIONS
+    # ============================================================================
+    st.markdown("## 📈 Advanced Analytics")
+    
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🔥 EV Heatmap", 
+        "💰 Profit Projection", 
+        "📊 EV Distribution",
+        "🎯 Win Prob vs EV",
+        "📉 Unit Allocation"
+    ])
+    
+    with tab1:
+        st.markdown("### Expected Value Heatmap")
+        st.caption("Shows average EV by sport and confidence level - darker green = better opportunities")
+        fig = create_ev_heatmap(all_plays_df)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab2:
+        st.markdown("### Bankroll Projection (Monte Carlo Simulation)")
+        st.caption("100 simulations of today's plays - shows possible outcomes and expected path")
+        
+        bankroll_input = st.number_input("Your Bankroll ($)", min_value=100, max_value=100000, value=1000, step=100)
+        
+        fig, expected_end = create_profit_projection_chart(all_plays_df, bankroll_input)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+            
+            profit = expected_end - bankroll_input
+            roi = (profit / bankroll_input) * 100
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Expected Ending Balance", f"${expected_end:.2f}")
+            with col2:
+                st.metric("Expected Profit", f"${profit:.2f}", delta=f"{roi:+.1f}%")
+            with col3:
+                st.metric("Expected ROI", f"{roi:.1f}%")
+    
+    with tab3:
+        st.markdown("### EV Distribution Analysis")
+        st.caption("Distribution of expected value across all opportunities")
+        fig = create_ev_distribution(all_plays_df)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab4:
+        st.markdown("### Win Probability vs Expected Value")
+        st.caption("Bubble size = bet units. Look for high EV + high win prob (upper right)")
+        fig = create_win_prob_vs_ev_scatter(all_plays_df)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab5:
+        st.markdown("### Unit Allocation by Sport")
+        st.caption("How your bankroll is distributed across sports")
+        fig = create_unit_allocation_chart(all_plays_df)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # ============================================================================
+    # TOP 5 PLAYS OF THE DAY
+    # ============================================================================
+    st.subheader("🔥 TOP 5 PLAYS OF THE DAY")
+    st.caption("Ranked by Expected Value - Your best opportunities to beat the book")
+    
+    top_5 = all_plays_df.head(5)
+    
+    for idx, play in top_5.iterrows():
+        with st.expander(
+            f"#{idx+1} | {play['sport']} | {play['predicted_winner']} ({play['american_odds']:+d}) | +{play['expected_value']:.1f}% EV | {play['bet_units']:.0f}U",
+            expanded=(idx == 0)  # Auto-expand #1 play
+        ):
+            col1, col2, col3 = st.columns([2, 2, 2])
+            
+            with col1:
+                st.markdown("### 📊 THE PLAY")
+                st.markdown(f"**{play['away_team']} @ {play['home_team']}**")
+                st.metric("Pick", f"{play['predicted_winner']} ML", f"{play['american_odds']:+d}")
+                
+                prob = play['home_win_prob'] if play['predicted_winner'] == play['home_team'] else play['away_win_prob']
+                st.caption(f"Win Probability: {prob*100:.1f}%")
+                
+                # Game time
+                if 'game_time' in play and pd.notna(play['game_time']):
+                    try:
+                        if isinstance(play['game_time'], str):
+                            dt = pd.to_datetime(play['game_time'])
+                            st.caption(f"🕐 {dt.strftime('%I:%M %p ET')}")
+                    except:
+                        pass
+            
+            with col2:
+                st.markdown("### 💰 VALUE ANALYSIS")
+                
+                # EV with color coding
+                ev_val = play['expected_value']
+                if ev_val >= 5:
+                    st.success(f"+{ev_val:.1f}% EV 🔥")
+                elif ev_val >= 3:
+                    st.info(f"+{ev_val:.1f}% EV ⭐⭐⭐")
+                else:
+                    st.info(f"+{ev_val:.1f}% EV ⭐⭐")
+                
+                st.metric("Kelly %", f"{play['kelly_pct']:.2f}%")
+                st.metric("Bet Units", f"{play['bet_units']:.0f}U")
+                
+                # ROI estimate
+                expected_roi = play['expected_value'] * play['bet_units']
+                st.caption(f"Expected ROI: +{expected_roi:.2f}% of bankroll")
+            
+            with col3:
+                st.markdown("### 📈 INSIGHTS")
+                
+                st.markdown(f"**Sport:** {play['sport']}")
+                st.markdown(f"**Value:** {play['value_rating']}")
+                
+                if 'sharp_indicator' in play:
+                    indicator = play['sharp_indicator']
+                    if indicator == 'Sharp Money':
+                        st.success(f"💰 {indicator}")
+                    elif indicator == 'Public Play':
+                        st.warning(f"👥 {indicator}")
+                    else:
+                        st.info(f"⚖️ {indicator}")
+                
+                confidence_pct = play['confidence'] * 100
+                st.metric("Confidence", f"{confidence_pct:.0f}%")
+            
+            # Full betting insight
+            st.markdown("---")
+            st.info(play['betting_insight'])
+            
+            # Edge breakdown
+            market_prob = play['market_prob']
+            our_prob = play['implied_prob']
+            edge = (our_prob - market_prob) * 100
+            
+            st.caption(f"Market thinks {market_prob*100:.1f}% | We think {our_prob*100:.1f}% | Edge: +{edge:.1f}%")
+    
+    st.markdown("---")
+    
+    # ============================================================================
+    # BREAKDOWN BY SPORT
+    # ============================================================================
+    st.subheader("📊 Breakdown by Sport")
+    
+    sport_summary = all_plays_df.groupby('sport').agg({
+        'expected_value': ['count', 'sum', 'mean'],
+        'bet_units': 'sum'
+    }).round(2)
+    
+    sport_summary.columns = ['# Plays', 'Total EV', 'Avg EV', 'Total Units']
+    sport_summary = sport_summary.sort_values('Total EV', ascending=False)
+    
+    st.dataframe(sport_summary, use_container_width=True)
+    
+    # ============================================================================
+    # ALL +EV PLAYS TABLE
+    # ============================================================================
+    st.subheader("📋 All +EV Plays Today")
+    
+    display_df = all_plays_df[[
+        'sport', 'away_team', 'home_team', 'predicted_winner', 
+        'american_odds', 'home_win_prob', 'expected_value', 
+        'bet_units', 'value_rating'
+    ]].copy()
+    
+    # Format columns
+    display_df['Win %'] = display_df['home_win_prob'].apply(lambda x: f"{x*100:.1f}%")
+    display_df['Odds'] = display_df['american_odds'].apply(lambda x: f"{x:+d}")
+    display_df['EV'] = display_df['expected_value'].apply(lambda x: f"+{x:.1f}%")
+    display_df['Units'] = display_df['bet_units'].apply(lambda x: f"{x:.0f}U")
+    
+    # Drop original columns
+    display_df = display_df.drop(['home_win_prob', 'american_odds', 'expected_value', 'bet_units'], axis=1)
+    
+    # Rename
+    display_df = display_df.rename(columns={
+        'sport': 'Sport',
+        'away_team': 'Away',
+        'home_team': 'Home',
+        'predicted_winner': 'Pick',
+        'value_rating': 'Value'
+    })
+    
+    st.dataframe(display_df, use_container_width=True, hide_index=True, height=400)
+    
+    # ============================================================================
+    # BANKROLL MANAGEMENT SUMMARY
+    # ============================================================================
+    with st.expander("💰 Bankroll Management Summary"):
+        total_risk = all_plays_df['bet_units'].sum()
+        
+        st.markdown(f"""
+        ### Today's Action Plan
+        
+        **Total Units to Risk:** {total_risk:.1f}U ({total_risk:.1f}% of bankroll)
+        **Number of Bets:** {len(all_plays_df)}
+        **Expected Return:** +{all_plays_df['expected_value'].sum():.1f}% of bankroll
+        
+        ### Risk Management
+        - ✅ Diversified across {all_plays_df['sport'].nunique()} sports
+        - ✅ Each bet sized by Kelly Criterion
+        - ✅ Max bet is {all_plays_df['bet_units'].max():.0f}U
+        - ✅ All plays are +EV (profitable long-term)
+        
+        ### What This Means
+        If you bet these plays consistently:
+        - **Today's Expected Profit:** ${(all_plays_df['expected_value'].sum() * 10):.2f} per $1,000 bankroll
+        - **Average EV per Bet:** +{all_plays_df['expected_value'].mean():.1f}%
+        - **Long-term ROI:** Positive (you'll be profitable over time)
+        
+        **Remember:** Variance exists. Not every bet wins. That's why we size bets properly and only bet +EV.
+        """)
     """Display ALL predictions with professional betting metrics."""
     if predictions_df.empty:
         st.info("No games found for the selected date.")
@@ -844,10 +1494,37 @@ def main():
     # Main content area
     st.header(f"📅 Predictions for {selected_date.strftime('%B %d, %Y')}")
     
-    # Fetch games button
-    if st.button("🔍 Fetch Games & Generate Predictions", type="primary", use_container_width=True):
+    # TWO MODES: Single Sport OR Daily EV Scanner
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        single_sport_btn = st.button("🔍 Analyze Single Sport", type="primary", use_container_width=True)
+    
+    with col2:
+        ev_scanner_btn = st.button("🔥 DAILY EV SCANNER (All Sports)", type="secondary", use_container_width=True)
+    
+    # ============================================================================
+    # DAILY EV SCANNER MODE - THE MONEY MAKER
+    # ============================================================================
+    if ev_scanner_btn:
+        st.markdown("---")
+        st.markdown("## 🔥 DAILY +EV SCANNER")
+        st.caption("Scanning NBA, NFL, CBB, and CFB for positive expected value opportunities...")
         
-        with st.spinner("Fetching REAL games from srating.io API..."):
+        # Run the scanner
+        all_plays_df = scan_all_sports_for_ev(datetime.combine(selected_date, datetime.min.time()))
+        
+        # Display the dashboard
+        display_daily_ev_dashboard(all_plays_df)
+        
+        return  # Exit after EV scanner
+    
+    # ============================================================================
+    # SINGLE SPORT MODE - ORIGINAL FUNCTIONALITY
+    # ============================================================================
+    if single_sport_btn:
+        
+        with st.spinner(f"Fetching {sport} games..."):
             # Fetch today's games - REAL DATA ONLY
             games_df = fetch_todays_games(
                 sport_code=sport,
@@ -875,6 +1552,8 @@ def main():
                 
             except Exception as e:
                 st.error(f"Error generating predictions: {e}")
+                import traceback
+                st.code(traceback.format_exc())
                 return
     
     # Display predictions if available
