@@ -13,8 +13,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import joblib
 from typing import Dict, Optional
+
+# Import joblib from sklearn (more reliable on Streamlit Cloud)
+try:
+    from sklearn.externals import joblib
+except ImportError:
+    import joblib
 
 # Import utility functions
 from utils import (
