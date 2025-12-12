@@ -134,7 +134,7 @@ def generate_mock_todays_games(sport_code: str, date: datetime) -> pd.DataFrame:
     Generate mock games for demonstration purposes.
     
     Args:
-        sport_code: 'CBB' or 'CFB'
+        sport_code: 'NBA', 'NFL', 'CBB', or 'CFB'
         date: Date for the games
         
     Returns:
@@ -146,16 +146,44 @@ def generate_mock_todays_games(sport_code: str, date: datetime) -> pd.DataFrame:
         teams = [
             'Duke', 'North Carolina', 'Kentucky', 'Kansas', 'UCLA',
             'Villanova', 'Michigan', 'Arizona', 'Gonzaga', 'Virginia',
-            'Texas', 'Tennessee', 'Auburn', 'Purdue', 'Houston'
+            'Texas', 'Tennessee', 'Auburn', 'Purdue', 'Houston',
+            'Connecticut', 'Marquette', 'Creighton', 'Xavier', 'Baylor',
+            'Illinois', 'Indiana', 'Wisconsin', 'Maryland', 'Florida',
+            'Arkansas', 'Alabama', 'Mississippi State', 'Texas A&M', 'Missouri'
         ]
-    else:  # CFB
+    elif sport_code == 'CFB':
         teams = [
             'Alabama', 'Georgia', 'Ohio State', 'Michigan', 'Texas',
             'USC', 'Notre Dame', 'Clemson', 'Oregon', 'Penn State',
-            'Florida State', 'LSU', 'Oklahoma', 'Tennessee', 'Washington'
+            'Florida State', 'LSU', 'Oklahoma', 'Tennessee', 'Washington',
+            'Miami', 'Florida', 'Auburn', 'Texas A&M', 'Ole Miss',
+            'Missouri', 'Kentucky', 'South Carolina', 'Arkansas', 'Utah',
+            'Colorado', 'Kansas State', 'TCU', 'Baylor', 'Oklahoma State'
         ]
+    elif sport_code == 'NBA':
+        teams = [
+            'Lakers', 'Celtics', 'Warriors', 'Heat', 'Bucks',
+            'Nuggets', 'Suns', '76ers', 'Mavericks', 'Clippers',
+            'Nets', 'Grizzlies', 'Kings', 'Knicks', 'Cavaliers',
+            'Pelicans', 'Hawks', 'Raptors', 'Bulls', 'Pacers',
+            'Magic', 'Thunder', 'Timberwolves', 'Jazz', 'Blazers',
+            'Rockets', 'Wizards', 'Hornets', 'Spurs', 'Pistons'
+        ]
+    elif sport_code == 'NFL':
+        teams = [
+            'Chiefs', 'Bills', 'Eagles', '49ers', 'Cowboys',
+            'Ravens', 'Bengals', 'Dolphins', 'Jaguars', 'Chargers',
+            'Vikings', 'Giants', 'Jets', 'Lions', 'Seahawks',
+            'Commanders', 'Patriots', 'Packers', 'Buccaneers', 'Broncos',
+            'Raiders', 'Rams', 'Saints', 'Browns', 'Steelers',
+            'Colts', 'Titans', 'Falcons', 'Panthers', 'Cardinals', 'Bears', 'Texans'
+        ]
+    else:
+        teams = ['Team_A', 'Team_B', 'Team_C', 'Team_D']
     
-    n_games = np.random.randint(5, 12)
+    # Limit games to ensure we don't run out of teams
+    max_games = min(7, len(teams) // 2)
+    n_games = np.random.randint(5, max_games + 1)
     games = []
     
     selected_teams = np.random.choice(teams, size=n_games*2, replace=False)
