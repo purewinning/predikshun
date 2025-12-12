@@ -505,8 +505,20 @@ def display_high_confidence_picks(predictions_df: pd.DataFrame, threshold: float
         with col1:
             matchup = f"**{game['away_team']}** @ **{game['home_team']}**"
             st.markdown(matchup)
-            if 'game_time' in game:
-                st.caption(f"🕐 {game['game_time'].strftime('%I:%M %p')}")
+            if 'game_time' in game and pd.notna(game['game_time']):
+                # Handle both string and datetime
+                try:
+                    if isinstance(game['game_time'], str):
+                        # Try parsing ISO format from ESPN
+                        try:
+                            dt = pd.to_datetime(game['game_time'])
+                            st.caption(f"🕐 {dt.strftime('%I:%M %p')}")
+                        except:
+                            st.caption(f"🕐 {game['game_time']}")
+                    else:
+                        st.caption(f"🕐 {game['game_time'].strftime('%I:%M %p')}")
+                except:
+                    st.caption(f"🕐 {game.get('game_time', 'TBD')}")
         
         with col2:
             winner = game['predicted_winner']
