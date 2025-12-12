@@ -80,131 +80,136 @@ def load_model(sport: str):
 # DATA FETCHING FUNCTIONS
 # ============================================================================
 
-def fetch_todays_games(sport_code: str, selected_date: datetime, 
-                       use_mock: bool = False) -> pd.DataFrame:
+def fetch_todays_games(sport_code: str, selected_date: datetime) -> pd.DataFrame:
     """
-    Fetch games for the selected date.
+    Fetch REAL games for the selected date from srating.io API.
+    NO MOCK DATA - REAL GAMES ONLY.
     
     Args:
-        sport_code: 'CBB' or 'CFB'
+        sport_code: 'NBA', 'NFL', 'CBB', or 'CFB'
         selected_date: Date to fetch games for
-        use_mock: If True, generate mock data instead of API call
         
     Returns:
-        DataFrame with today's games
+        DataFrame with real games from the API
     """
-    if use_mock:
-        # Generate mock games for demonstration
-        return generate_mock_todays_games(sport_code, selected_date)
-    
     try:
-        # Real API call
-        # Note: You'll need to customize organization_id and division_id
-        # based on your specific needs
-        params = {
-            'organization_id': '1',  # Customize
-            'division_id': '1',      # Customize
-            'start_date': selected_date.strftime('%Y-%m-%d')
+        # Map sport codes to API organization codes
+        sport_to_org_code = {
+            'NBA': ['NBA', 'nba'],
+            'NFL': ['NFL', 'nfl'],
+            'CBB': ['NCAAM', 'CBB', 'NCAA Basketball', 'ncaam', 'cbb'],
+            'CFB': ['CFB', 'NCAAF', 'NCAA Football', 'cfb', 'ncaaf']
         }
         
-        games = fetch_data_from_srating('game/getGames', params)
+        # Fetch all organizations from API
+        st.info("🔍 Fetching organizations from srating.io API...")
+        all_orgs = fetch_data_from_srating('organization/read', {'inactive': '0'})
         
-        if not games:
+        if not all_orgs:
+            st.error("❌ No organizations returned from API")
             return pd.DataFrame()
         
-        df = pd.DataFrame(games)
+        # Find matching organization
+        matching_org = None
+        possible_codes = sport_to_org_code.get(sport_code, [])
+        
+        for org in all_orgs:
+            if not isinstance(org, dict):
+                continue
+            org_code = org.get('code', '')
+            if org_code in possible_codes:
+                matching_org = org
+                st.success(f"✅ Found: {org.get('name', 'Unknown')} ({org_code})")
+                break
+        
+        if not matching_org:
+            st.warning(f"⚠️ No organization found for {sport_code}")
+            st.info(f"Looking for: {', '.join(possible_codes)}")
+            
+            # Show what's available
+            with st.expander("Available Organizations"):
+                for org in all_orgs[:20]:  # Show first 20
+                    if isinstance(org, dict):
+                        st.write(f"- {org.get('name', 'Unknown')}: {org.get('code', 'N/A')}")
+            
+            return pd.DataFrame()
+        
+        org_id = matching_org.get('organization_id')
+        
+        # Fetch divisions
+        st.info(f"🔍 Fetching divisions for {matching_org.get('name')}...")
+        divisions = fetch_data_from_srating('division/read', {
+            'organization_id': org_id,
+            'inactive': '0'
+        })
+        
+        if not divisions:
+            st.warning("No divisions found")
+            return pd.DataFrame()
+        
+        st.success(f"✅ Found {len(divisions)} division(s)")
+        
+        # Fetch games from ALL divisions
+        all_games = []
+        date_str = selected_date.strftime('%Y-%m-%d')
+        
+        for div in divisions:
+            if not isinstance(div, dict):
+                continue
+                
+            div_id = div.get('division_id')
+            div_name = div.get('name', 'Unknown')
+            
+            try:
+                params = {
+                    'organization_id': org_id,
+                    'division_id': div_id,
+                    'start_date': date_str
+                }
+                
+                games = fetch_data_from_srating('game/getGames', params)
+                
+                if games:
+                    st.info(f"📅 {div_name}: {len(games)} game(s)")
+                    for game in games:
+                        game['division'] = div_name
+                    all_games.extend(games)
+                    
+            except Exception as e:
+                st.warning(f"⚠️ {div_name}: {str(e)}")
+                continue
+        
+        if not all_games:
+            st.info(f"ℹ️ No games scheduled for {sport_code} on {date_str}")
+            return pd.DataFrame()
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(all_games)
         
         # Standardize column names
         column_mapping = {
             'home_team_id': 'home_team',
             'away_team_id': 'away_team',
-            'start_datetime': 'game_time'
+            'home_team_name': 'home_team',
+            'away_team_name': 'away_team',
+            'start_datetime': 'game_time',
+            'start_date': 'game_time'
         }
-        df = df.rename(columns=column_mapping)
+        
+        for old_col, new_col in column_mapping.items():
+            if old_col in df.columns and new_col not in df.columns:
+                df[new_col] = df[old_col]
+        
+        st.success(f"✅ TOTAL: {len(df)} REAL game(s) found!")
         
         return df
         
     except Exception as e:
-        st.error(f"Error fetching games: {e}")
+        st.error(f"❌ API Error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         return pd.DataFrame()
 
-
-def generate_mock_todays_games(sport_code: str, date: datetime) -> pd.DataFrame:
-    """
-    Generate mock games for demonstration purposes.
-    
-    Args:
-        sport_code: 'NBA', 'NFL', 'CBB', or 'CFB'
-        date: Date for the games
-        
-    Returns:
-        DataFrame with mock games
-    """
-    np.random.seed(int(date.timestamp()))
-    
-    if sport_code == 'CBB':
-        teams = [
-            'Duke', 'North Carolina', 'Kentucky', 'Kansas', 'UCLA',
-            'Villanova', 'Michigan', 'Arizona', 'Gonzaga', 'Virginia',
-            'Texas', 'Tennessee', 'Auburn', 'Purdue', 'Houston',
-            'Connecticut', 'Marquette', 'Creighton', 'Xavier', 'Baylor',
-            'Illinois', 'Indiana', 'Wisconsin', 'Maryland', 'Florida',
-            'Arkansas', 'Alabama', 'Mississippi State', 'Texas A&M', 'Missouri'
-        ]
-    elif sport_code == 'CFB':
-        teams = [
-            'Alabama', 'Georgia', 'Ohio State', 'Michigan', 'Texas',
-            'USC', 'Notre Dame', 'Clemson', 'Oregon', 'Penn State',
-            'Florida State', 'LSU', 'Oklahoma', 'Tennessee', 'Washington',
-            'Miami', 'Florida', 'Auburn', 'Texas A&M', 'Ole Miss',
-            'Missouri', 'Kentucky', 'South Carolina', 'Arkansas', 'Utah',
-            'Colorado', 'Kansas State', 'TCU', 'Baylor', 'Oklahoma State'
-        ]
-    elif sport_code == 'NBA':
-        teams = [
-            'Lakers', 'Celtics', 'Warriors', 'Heat', 'Bucks',
-            'Nuggets', 'Suns', '76ers', 'Mavericks', 'Clippers',
-            'Nets', 'Grizzlies', 'Kings', 'Knicks', 'Cavaliers',
-            'Pelicans', 'Hawks', 'Raptors', 'Bulls', 'Pacers',
-            'Magic', 'Thunder', 'Timberwolves', 'Jazz', 'Blazers',
-            'Rockets', 'Wizards', 'Hornets', 'Spurs', 'Pistons'
-        ]
-    elif sport_code == 'NFL':
-        teams = [
-            'Chiefs', 'Bills', 'Eagles', '49ers', 'Cowboys',
-            'Ravens', 'Bengals', 'Dolphins', 'Jaguars', 'Chargers',
-            'Vikings', 'Giants', 'Jets', 'Lions', 'Seahawks',
-            'Commanders', 'Patriots', 'Packers', 'Buccaneers', 'Broncos',
-            'Raiders', 'Rams', 'Saints', 'Browns', 'Steelers',
-            'Colts', 'Titans', 'Falcons', 'Panthers', 'Cardinals', 'Bears', 'Texans'
-        ]
-    else:
-        teams = ['Team_A', 'Team_B', 'Team_C', 'Team_D']
-    
-    # Limit games to ensure we don't run out of teams
-    max_games = min(7, len(teams) // 2)
-    n_games = np.random.randint(5, max_games + 1)
-    games = []
-    
-    selected_teams = np.random.choice(teams, size=n_games*2, replace=False)
-    
-    for i in range(n_games):
-        home_team = selected_teams[i*2]
-        away_team = selected_teams[i*2 + 1]
-        
-        # Generate random game time
-        hour = np.random.randint(12, 22)
-        minute = np.random.choice([0, 30])
-        game_time = date.replace(hour=hour, minute=minute)
-        
-        games.append({
-            'home_team': home_team,
-            'away_team': away_team,
-            'game_time': game_time,
-            'game_id': f"{sport_code}_{date.strftime('%Y%m%d')}_{i}"
-        })
-    
-    return pd.DataFrame(games)
 
 
 def create_mock_features(games_df: pd.DataFrame) -> pd.DataFrame:
@@ -505,12 +510,11 @@ def main():
     # Fetch games button
     if st.button("🔍 Fetch Games & Generate Predictions", type="primary", use_container_width=True):
         
-        with st.spinner("Fetching games..."):
-            # Fetch today's games
+        with st.spinner("Fetching REAL games from srating.io API..."):
+            # Fetch today's games - REAL DATA ONLY
             games_df = fetch_todays_games(
                 sport_code=sport,
-                selected_date=datetime.combine(selected_date, datetime.min.time()),
-                use_mock=True  # Set to False when API is available
+                selected_date=datetime.combine(selected_date, datetime.min.time())
             )
         
         if games_df.empty:
