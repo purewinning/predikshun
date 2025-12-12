@@ -49,7 +49,7 @@ def load_model(sport: str):
     and reuse it across sessions.
     
     Args:
-        sport: Sport code ('CBB' or 'CFB')
+        sport: Sport code ('NBA', 'NFL', 'CBB', or 'CFB')
         
     Returns:
         Loaded XGBoost model
@@ -58,11 +58,13 @@ def load_model(sport: str):
         FileNotFoundError: If model file doesn't exist
     """
     sport_names = {
-        'CBB': 'college basketball',
-        'CFB': 'college football'
+        'CBB': 'college_basketball',
+        'CFB': 'college_football',
+        'NBA': 'nba_basketball',
+        'NFL': 'nfl_football'
     }
     
-    model_path = f"model/{sport_names[sport].replace(' ', '_')}_xgb.pkl"
+    model_path = f"model/{sport_names[sport]}_xgb.pkl"
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(
@@ -324,7 +326,13 @@ def display_sidebar():
             st.success("✓ Model loaded")
             
             # Display feature importance file if exists
-            importance_file = f"model/{'college_basketball' if sport == 'CBB' else 'college_football'}_feature_importance.csv"
+            sport_file_names = {
+                'CBB': 'college_basketball',
+                'CFB': 'college_football',
+                'NBA': 'nba_basketball',
+                'NFL': 'nfl_football'
+            }
+            importance_file = f"model/{sport_file_names[sport]}_feature_importance.csv"
             if os.path.exists(importance_file):
                 with st.expander("View Feature Importance"):
                     importance_df = pd.read_csv(importance_file)
