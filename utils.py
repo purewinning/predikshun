@@ -1,4 +1,4 @@
-"""
+\"""
 utils.py - Data Handling & Feature Engineering Module
 
 This module contains utility functions for:
@@ -34,13 +34,8 @@ def fetch_data_from_srating(endpoint: str, params: Optional[Dict] = None) -> Dic
         ValueError: If SRATING_API_KEY is not set
         requests.HTTPError: If the API request fails
     """
-    # Get API key from environment variable
-    api_key = os.getenv('SRATING_API_KEY')
-    if not api_key:
-        raise ValueError(
-            "SRATING_API_KEY environment variable is not set. "
-            "Please set it before running this application."
-        )
+    # HARDCODED API KEY - REAL DATA BABY!
+    api_key = "93833680-d6b1-11f0-bc34-529c3ffdbb93"
     
     # Construct full URL
     base_url = "https://api.srating.io/v1"
