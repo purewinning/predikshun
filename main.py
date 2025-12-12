@@ -999,146 +999,303 @@ def generate_ai_insights(all_plays_df: pd.DataFrame) -> dict:
     return insights
 
 
+def simulate_betting_outcomes(all_plays_df: pd.DataFrame, n_simulations: int = 10000) -> dict:
+    """
+    Run 10,000 simulations to find ACTUAL win rates and expected profits.
+    This tells you what REALLY happens when you bet these plays.
+    """
+    results = {
+        'win_rate': [],
+        'total_profit': [],
+        'roi': [],
+        'max_profit': 0,
+        'max_loss': 0,
+        'profitable_sims': 0
+    }
+    
+    for sim in range(n_simulations):
+        wins = 0
+        total_bet = 0
+        total_return = 0
+        
+        for idx, play in all_plays_df.iterrows():
+            bet_amount = play['bet_units'] * 10  # $10 per unit
+            total_bet += bet_amount
+            
+            # Get win probability
+            win_prob = play['home_win_prob'] if play['predicted_winner'] == play['home_team'] else play['away_win_prob']
+            
+            # Simulate outcome
+            if np.random.random() < win_prob:
+                wins += 1
+                # Calculate payout
+                if play['american_odds'] < 0:
+                    profit = bet_amount * (100 / abs(play['american_odds']))
+                else:
+                    profit = bet_amount * (play['american_odds'] / 100)
+                total_return += bet_amount + profit
+            else:
+                # Loss - return nothing
+                pass
+        
+        profit = total_return - total_bet
+        win_rate = wins / len(all_plays_df) if len(all_plays_df) > 0 else 0
+        roi = (profit / total_bet * 100) if total_bet > 0 else 0
+        
+        results['win_rate'].append(win_rate)
+        results['total_profit'].append(profit)
+        results['roi'].append(roi)
+        
+        if profit > results['max_profit']:
+            results['max_profit'] = profit
+        if profit < results['max_loss']:
+            results['max_loss'] = profit
+        if profit > 0:
+            results['profitable_sims'] += 1
+    
+    # Calculate statistics
+    results['avg_win_rate'] = np.mean(results['win_rate'])
+    results['avg_profit'] = np.mean(results['total_profit'])
+    results['avg_roi'] = np.mean(results['roi'])
+    results['profit_probability'] = (results['profitable_sims'] / n_simulations) * 100
+    results['median_profit'] = np.median(results['total_profit'])
+    
+    return results
+
+
 def display_daily_ev_dashboard(all_plays_df: pd.DataFrame):
     """
-    ELITE DASHBOARD with advanced visualizations and AI insights.
+    CLEAN, ACTIONABLE DASHBOARD - Money first, visuals second.
     """
     if all_plays_df.empty:
         st.warning("🚫 No +EV opportunities found across any sport today.")
         st.info("Check back later or try a different date. Not every day has value.")
         return
     
-    st.success(f"🎯 Found {len(all_plays_df)} +EV Opportunities Today!")
-    
     # ============================================================================
-    # AI-POWERED INSIGHTS - MACHINE LEARNING ANALYSIS
+    # SECTION 1: THE PLAYS - WHAT TO BET TODAY
     # ============================================================================
-    st.markdown("## 🤖 AI-Powered Insights")
+    st.markdown("# 💰 TODAY'S PLAYS")
     
-    insights = generate_ai_insights(all_plays_df)
-    
-    col1, col2 = st.columns(2)
-    
+    # Quick stats
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.markdown("### 💡 Key Findings")
-        if insights['key_findings']:
-            for finding in insights['key_findings']:
-                st.info(finding)
-        else:
-            st.info("Standard EV opportunities detected")
-    
+        st.metric("Total Plays", len(all_plays_df))
     with col2:
-        st.markdown("### ⚠️ Risk Warnings")
-        if insights['warnings']:
-            for warning in insights['warnings']:
-                st.warning(warning)
-        else:
-            st.success("✅ No significant risk warnings")
-    
-    if insights['opportunities']:
-        st.markdown("### 🎯 Top Opportunities")
-        for opp in insights['opportunities']:
-            st.success(opp)
-    
-    # Risk badge
-    risk_colors = {
-        'CONSERVATIVE': 'green',
-        'MODERATE-HIGH': 'orange',
-        'HIGH RISK': 'red'
-    }
-    st.markdown(f"**Risk Level:** :{risk_colors.get(insights['risk_assessment'], 'blue')}[{insights['risk_assessment']}]")
+        st.metric("Total Units", f"{all_plays_df['bet_units'].sum():.1f}U")
+    with col3:
+        st.metric("Avg EV", f"+{all_plays_df['expected_value'].mean():.1f}%")
+    with col4:
+        max_plays = len(all_plays_df[all_plays_df['bet_units'] >= 2])
+        st.metric("Strong Plays (2-3U)", max_plays)
+    with col5:
+        total_ev = all_plays_df['expected_value'].sum()
+        st.metric("Total Edge", f"+{total_ev:.1f}%")
     
     st.markdown("---")
     
     # ============================================================================
-    # SUMMARY METRICS WITH SPARKLINES
+    # THE BANGERS - TOP PLAYS TABLE
     # ============================================================================
-    st.markdown("## 📊 Performance Metrics")
+    st.markdown("## 🔥 THE BANGERS (2U+ Plays)")
     
-    col1, col2, col3, col4 = st.columns(4)
+    bangers = all_plays_df[all_plays_df['bet_units'] >= 2].copy()
+    
+    if not bangers.empty:
+        # Sort by EV
+        bangers = bangers.sort_values('expected_value', ascending=False)
+        
+        # Create clean table
+        banger_table = pd.DataFrame({
+            '🏆 Pick': bangers.apply(lambda x: f"{x['predicted_winner']} {x['american_odds']:+d}", axis=1),
+            'Matchup': bangers.apply(lambda x: f"{x['away_team']} @ {x['home_team']}", axis=1),
+            'Sport': bangers['sport'],
+            'Units': bangers['bet_units'].apply(lambda x: f"{x:.0f}U"),
+            'Win %': bangers.apply(lambda x: x['home_win_prob'] if x['predicted_winner'] == x['home_team'] else x['away_win_prob'], axis=1).apply(lambda x: f"{x*100:.0f}%"),
+            '+EV': bangers['expected_value'].apply(lambda x: f"+{x:.1f}%"),
+            'Value': bangers['value_rating']
+        })
+        
+        st.dataframe(banger_table, use_container_width=True, hide_index=True)
+        
+        # Quick copy-paste for betting
+        st.markdown("### 📋 Copy-Paste Bet Slip")
+        bet_slip = []
+        for idx, play in bangers.iterrows():
+            bet_slip.append(f"• {play['predicted_winner']} ML ({play['american_odds']:+d}) - {play['bet_units']:.0f}U")
+        
+        st.code("\n".join(bet_slip))
+        
+    else:
+        st.info("No 2U+ plays today. See all plays below.")
+    
+    st.markdown("---")
+    
+    # ============================================================================
+    # ALL PLAYS TABLE - CLEAN & SORTABLE
+    # ============================================================================
+    st.markdown("## 📊 ALL PLAYS TODAY")
+    
+    # Create comprehensive table
+    all_plays_table = pd.DataFrame({
+        'Sport': all_plays_df['sport'],
+        'Matchup': all_plays_df.apply(lambda x: f"{x['away_team']} @ {x['home_team']}", axis=1),
+        'Pick': all_plays_df.apply(lambda x: f"{x['predicted_winner']}", axis=1),
+        'Odds': all_plays_df['american_odds'].apply(lambda x: f"{x:+d}"),
+        'Win %': all_plays_df.apply(lambda x: x['home_win_prob'] if x['predicted_winner'] == x['home_team'] else x['away_win_prob'], axis=1).apply(lambda x: f"{x*100:.0f}%"),
+        'EV %': all_plays_df['expected_value'].apply(lambda x: f"+{x:.1f}%"),
+        'Units': all_plays_df['bet_units'].apply(lambda x: f"{x:.0f}U" if x > 0 else "Pass"),
+        'Value': all_plays_df['value_rating'],
+        'Sharp?': all_plays_df['sharp_indicator'].apply(lambda x: '💰' if x == 'Sharp Money' else ('👥' if x == 'Public Play' else ''))
+    })
+    
+    st.dataframe(all_plays_table, use_container_width=True, hide_index=True, height=400)
+    
+    st.markdown("---")
+    
+    # ============================================================================
+    # SIMULATION RESULTS - WHAT REALLY HAPPENS
+    # ============================================================================
+    st.markdown("## 🎲 SIMULATION: 10,000 POSSIBLE OUTCOMES")
+    st.caption("Running 10,000 simulations to see what ACTUALLY happens when you bet these plays...")
+    
+    with st.spinner("Running simulations..."):
+        sim_results = simulate_betting_outcomes(all_plays_df)
+    
+    # Display results
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        total_ev = all_plays_df['expected_value'].sum()
-        st.metric("Total +EV", f"+{total_ev:.1f}%", help="Combined edge across all plays")
+        st.markdown("### 🎯 Win Rate")
+        st.metric("Avg Wins Per Day", f"{sim_results['avg_win_rate']*len(all_plays_df):.1f} / {len(all_plays_df)}")
+        st.caption(f"{sim_results['avg_win_rate']*100:.1f}% hit rate")
     
     with col2:
-        total_units = all_plays_df['bet_units'].sum()
-        st.metric("Total Units", f"{total_units:.1f}U", help="Total recommended action", 
-                 delta=f"{total_units:.1f}% of bankroll")
+        st.markdown("### 💵 Expected Profit")
+        st.metric("Per $10/unit", f"${sim_results['avg_profit']:.2f}")
+        st.metric("ROI", f"{sim_results['avg_roi']:.1f}%")
     
     with col3:
-        max_plays = all_plays_df[all_plays_df['value_rating'] == '🔥 MAX']
-        st.metric("MAX Plays", len(max_plays), help="Strongest plays of the day")
+        st.markdown("### 📈 Profitability")
+        st.metric("Chance of Profit", f"{sim_results['profit_probability']:.1f}%")
+        st.caption(f"Best case: ${sim_results['max_profit']:.2f}")
+        st.caption(f"Worst case: ${sim_results['max_loss']:.2f}")
     
-    with col4:
-        avg_ev = all_plays_df['expected_value'].mean()
-        st.metric("Avg EV", f"+{avg_ev:.1f}%", help="Average edge per play")
+    # Profit range
+    st.markdown("### 💰 Expected Outcome Range")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info(f"**25th Percentile:** ${np.percentile(sim_results['total_profit'], 25):.2f}")
+    with col2:
+        st.success(f"**Median (Expected):** ${sim_results['median_profit']:.2f}")
+    with col3:
+        st.info(f"**75th Percentile:** ${np.percentile(sim_results['total_profit'], 75):.2f}")
+    
+    # Interpretation
+    if sim_results['profit_probability'] >= 70:
+        st.success(f"✅ **STRONG SLATE:** {sim_results['profit_probability']:.0f}% chance of profit. You'll likely make money today.")
+    elif sim_results['profit_probability'] >= 55:
+        st.info(f"✓ **GOOD SLATE:** {sim_results['profit_probability']:.0f}% chance of profit. Slight edge.")
+    else:
+        st.warning(f"⚠️ **VARIANCE HEAVY:** {sim_results['profit_probability']:.0f}% chance of profit. High risk slate.")
     
     st.markdown("---")
     
     # ============================================================================
-    # ADVANCED VISUALIZATIONS
+    # BREAKDOWN BY SPORT
     # ============================================================================
-    st.markdown("## 📈 Advanced Analytics")
+    st.markdown("## 📊 Breakdown by Sport")
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🔥 EV Heatmap", 
-        "💰 Profit Projection", 
-        "📊 EV Distribution",
-        "🎯 Win Prob vs EV",
-        "📉 Unit Allocation"
-    ])
+    sport_breakdown = all_plays_df.groupby('sport').agg({
+        'expected_value': ['count', 'mean', 'sum'],
+        'bet_units': 'sum',
+        'confidence': 'mean'
+    }).round(2)
     
-    with tab1:
-        st.markdown("### Expected Value Heatmap")
-        st.caption("Shows average EV by sport and confidence level - darker green = better opportunities")
-        fig = create_ev_heatmap(all_plays_df)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
+    sport_breakdown.columns = ['# Plays', 'Avg EV', 'Total EV', 'Total Units', 'Avg Confidence']
+    sport_breakdown = sport_breakdown.sort_values('Total EV', ascending=False)
     
-    with tab2:
-        st.markdown("### Bankroll Projection (Monte Carlo Simulation)")
-        st.caption("100 simulations of today's plays - shows possible outcomes and expected path")
-        
-        bankroll_input = st.number_input("Your Bankroll ($)", min_value=100, max_value=100000, value=1000, step=100)
-        
-        fig, expected_end = create_profit_projection_chart(all_plays_df, bankroll_input)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-            
-            profit = expected_end - bankroll_input
-            roi = (profit / bankroll_input) * 100
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Expected Ending Balance", f"${expected_end:.2f}")
-            with col2:
-                st.metric("Expected Profit", f"${profit:.2f}", delta=f"{roi:+.1f}%")
-            with col3:
-                st.metric("Expected ROI", f"{roi:.1f}%")
+    # Format for display
+    sport_breakdown_display = sport_breakdown.copy()
+    sport_breakdown_display['Avg EV'] = sport_breakdown_display['Avg EV'].apply(lambda x: f"+{x:.1f}%")
+    sport_breakdown_display['Total EV'] = sport_breakdown_display['Total EV'].apply(lambda x: f"+{x:.1f}%")
+    sport_breakdown_display['Total Units'] = sport_breakdown_display['Total Units'].apply(lambda x: f"{x:.1f}U")
+    sport_breakdown_display['Avg Confidence'] = sport_breakdown_display['Avg Confidence'].apply(lambda x: f"{x*100:.0f}%")
     
-    with tab3:
-        st.markdown("### EV Distribution Analysis")
-        st.caption("Distribution of expected value across all opportunities")
-        fig = create_ev_distribution(all_plays_df)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with tab4:
-        st.markdown("### Win Probability vs Expected Value")
-        st.caption("Bubble size = bet units. Look for high EV + high win prob (upper right)")
-        fig = create_win_prob_vs_ev_scatter(all_plays_df)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with tab5:
-        st.markdown("### Unit Allocation by Sport")
-        st.caption("How your bankroll is distributed across sports")
-        fig = create_unit_allocation_chart(all_plays_df)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(sport_breakdown_display, use_container_width=True)
     
     st.markdown("---")
+    
+    # ============================================================================
+    # OPTIONAL: ADVANCED CHARTS (COLLAPSIBLE)
+    # ============================================================================
+    with st.expander("📈 Advanced Visualizations (Optional)"):
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### EV Distribution")
+            fig = create_ev_distribution(all_plays_df)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            st.markdown("### Unit Allocation")
+            fig = create_unit_allocation_chart(all_plays_df)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # ============================================================================
+    # BETTING GUIDE
+    # ============================================================================
+    with st.expander("💡 How to Use These Plays"):
+        st.markdown("""
+        ### Quick Start Guide
+        
+        **1. Focus on the Bangers (2U+ plays)**
+        - These are your strongest plays
+        - Copy the bet slip and place these first
+        
+        **2. Check the simulation results**
+        - Win rate shows how many you'll likely hit
+        - Expected profit shows what you'll likely make
+        - If profit probability > 60%, it's a good day
+        
+        **3. Bankroll management**
+        - 1 unit = 1% of your bankroll
+        - Don't bet more than total units shown
+        - If you have $1,000, and we show 10U, bet $100 total
+        
+        **4. Track results**
+        - Record your bets
+        - Compare to our predictions
+        - Adjust unit size based on results
+        
+        **5. Discipline**
+        - Only bet what we recommend
+        - Don't chase losses
+        - Trust the process (variance exists)
+        """)
+    
+    # ============================================================================
+    # SHARP MONEY ANALYSIS
+    # ============================================================================
+    if 'sharp_indicator' in all_plays_df.columns:
+        sharp_plays = all_plays_df[all_plays_df['sharp_indicator'] == 'Sharp Money']
+        if not sharp_plays.empty:
+            st.markdown("---")
+            st.markdown("## 💰 Sharp Money Plays")
+            st.caption(f"{len(sharp_plays)} plays aligned with professional bettors")
+            
+            sharp_table = pd.DataFrame({
+                'Pick': sharp_plays.apply(lambda x: f"{x['predicted_winner']} {x['american_odds']:+d}", axis=1),
+                'Sport': sharp_plays['sport'],
+                'EV': sharp_plays['expected_value'].apply(lambda x: f"+{x:.1f}%"),
+                'Units': sharp_plays['bet_units'].apply(lambda x: f"{x:.0f}U")
+            })
+            
+            st.dataframe(sharp_table, use_container_width=True, hide_index=True)
     
     # ============================================================================
     # TOP 5 PLAYS OF THE DAY
