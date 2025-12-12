@@ -12,6 +12,8 @@ xgboost>=2.0.0,<3.0.0
 # Streamlit UI
 streamlit>=1.29.0
 
+# Visualizations
+plotly>=5.18.0
+
 # Additional utilities
 python-dotenv>=1.0.0
-
