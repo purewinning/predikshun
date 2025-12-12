@@ -1,632 +1,444 @@
 """
-main.py - Streamlit Application for Sports Prediction Engine
+utils.py - Data Handling & Feature Engineering Module
 
-This application provides a user-friendly interface for:
-- Selecting sports and dates
-- Fetching today's games
-- Generating win probability predictions
-- Displaying high-confidence picks
+This module contains utility functions for:
+- Fetching data from the srating.io API
+- Calculating ELO ratings for teams
+- Engineering features for machine learning models
 """
 
 import os
-import streamlit as st
+import requests
 import pandas as pd
 import numpy as np
+from typing import Dict, Optional, List, Tuple
 from datetime import datetime, timedelta
-import joblib
-from typing import Dict, Optional
-
-# Import utility functions
-from utils import (
-    fetch_data_from_srating,
-    fetch_espn_games,
-    prepare_prediction_features,
-    get_feature_columns
-)
 
 
 # ============================================================================
-# PAGE CONFIGURATION
+# API INTERACTION FUNCTIONS
 # ============================================================================
 
-st.set_page_config(
-    page_title="Sports Prediction Engine",
-    page_icon="🏀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-
-# ============================================================================
-# MODEL LOADING
-# ============================================================================
-
-@st.cache_resource
-def load_model(sport: str):
+def fetch_data_from_srating(endpoint: str, params: Optional[Dict] = None) -> Dict:
     """
-    Load the trained XGBoost model for the specified sport.
-    
-    Uses Streamlit's @st.cache_resource to load the model only once
-    and reuse it across sessions.
+    Safely connect to the srating.io API and fetch data.
+    ONLY FOR COLLEGE SPORTS (CBB, CFB)
     
     Args:
-        sport: Sport code ('NBA', 'NFL', 'CBB', or 'CFB')
+        endpoint: API endpoint path (e.g., 'game/getGames', 'organization/read')
+        params: Dictionary of query parameters
         
     Returns:
-        Loaded XGBoost model
+        Dictionary containing the API response data
         
     Raises:
-        FileNotFoundError: If model file doesn't exist
+        ValueError: If SRATING_API_KEY is not set
+        requests.HTTPError: If the API request fails
     """
-    sport_names = {
-        'CBB': 'college_basketball',
-        'CFB': 'college_football',
-        'NBA': 'nba_basketball',
-        'NFL': 'nfl_football'
+    # HARDCODED API KEY - REAL DATA BABY!
+    api_key = "93833680-d6b1-11f0-bc34-529c3ffdbb93"
+    
+    # Construct full URL
+    base_url = "https://api.srating.io/v1"
+    url = f"{base_url}/{endpoint}"
+    
+    # Set up headers with API key
+    headers = {
+        "X-API-KEY": api_key,
+        "Content-Type": "application/json"
     }
     
-    model_path = f"model/{sport_names[sport]}_xgb.pkl"
-    
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(
-            f"Model file not found: {model_path}\n"
-            f"Please run train_model.py first to train the models."
-        )
-    
-    model = joblib.load(model_path)
-    return model
+    try:
+        # Make the API request
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        
+        # Raise an exception for bad status codes
+        response.raise_for_status()
+        
+        # Parse and return JSON response
+        data = response.json()
+        
+        # Handle different response formats
+        if isinstance(data, dict):
+            # If it's a dict with numeric keys, it's likely indexed data
+            # Extract just the values (the actual data objects)
+            if data and all(str(k).isdigit() for k in list(data.keys())[:5]):  # Check first 5 keys
+                return list(data.values())
+            # If it's a single object wrapped in a dict, return as list
+            elif 'data' in data:
+                return data['data'] if isinstance(data['data'], list) else [data['data']]
+            # Otherwise return as a single-item list
+            else:
+                return [data]
+        elif isinstance(data, list):
+            return data
+        else:
+            # Unknown format, wrap in list
+            return [data]
+        
+    except requests.exceptions.Timeout:
+        raise requests.HTTPError("API request timed out after 30 seconds")
+    except requests.exceptions.ConnectionError:
+        raise requests.HTTPError("Failed to connect to srating.io API")
+    except requests.exceptions.HTTPError as e:
+        raise requests.HTTPError(f"API request failed with status {response.status_code}: {e}")
+    except ValueError as e:
+        raise ValueError(f"Failed to parse API response as JSON: {e}")
 
 
-# ============================================================================
-# DATA FETCHING FUNCTIONS
-# ============================================================================
-
-def fetch_todays_games(sport_code: str, selected_date: datetime) -> pd.DataFrame:
+def fetch_espn_games(sport: str, date: datetime) -> list:
     """
-    Fetch REAL games for the selected date.
-    - NBA/NFL: Uses ESPN's FREE public API (no key needed!)
-    - CBB/CFB: Uses srating.io API
+    Fetch games from ESPN's FREE public API.
+    Works for NBA and NFL - NO API KEY NEEDED!
     
     Args:
-        sport_code: 'NBA', 'NFL', 'CBB', or 'CFB'
-        selected_date: Date to fetch games for
+        sport: 'NBA' or 'NFL'
+        date: Date to fetch games for
         
     Returns:
-        DataFrame with real games
+        List of games from ESPN
     """
+    sport_map = {
+        'NBA': 'basketball/nba',
+        'NFL': 'football/nfl'
+    }
     
-    # ============================================================================
-    # NBA AND NFL - USE ESPN API (FREE!)
-    # ============================================================================
-    if sport_code in ['NBA', 'NFL']:
-        try:
-            st.info(f"🔍 Fetching {sport_code} games from ESPN API (FREE!)...")
-            
-            games = fetch_espn_games(sport_code, selected_date)
-            
-            if not games:
-                st.info(f"ℹ️ No {sport_code} games scheduled for {selected_date.strftime('%Y-%m-%d')}")
-                return pd.DataFrame()
-            
-            # Parse ESPN format
-            parsed_games = []
-            for event in games:
-                try:
-                    competition = event.get('competitions', [{}])[0]
-                    competitors = competition.get('competitors', [])
-                    
-                    # Find home and away teams
-                    home_team = None
-                    away_team = None
-                    
-                    for comp in competitors:
-                        if comp.get('homeAway') == 'home':
-                            home_team = comp.get('team', {}).get('displayName', 'Unknown')
-                        elif comp.get('homeAway') == 'away':
-                            away_team = comp.get('team', {}).get('displayName', 'Unknown')
-                    
-                    if home_team and away_team:
-                        parsed_games.append({
-                            'home_team': home_team,
-                            'away_team': away_team,
-                            'game_time': event.get('date', 'Unknown'),
-                            'status': event.get('status', {}).get('type', {}).get('description', 'Unknown')
-                        })
-                        
-                except Exception as e:
-                    continue
-            
-            if not parsed_games:
-                st.warning(f"⚠️ Could not parse {sport_code} games from ESPN")
-                return pd.DataFrame()
-            
-            st.success(f"✅ Found {len(parsed_games)} {sport_code} game(s) from ESPN!")
-            return pd.DataFrame(parsed_games)
-            
-        except Exception as e:
-            st.error(f"❌ ESPN API Error: {e}")
-            import traceback
-            st.code(traceback.format_exc())
-            return pd.DataFrame()
+    if sport not in sport_map:
+        raise ValueError(f"ESPN API only supports NBA and NFL, got: {sport}")
     
-    # ============================================================================
-    # COLLEGE SPORTS (CBB/CFB) - USE SRATING API
-    # ============================================================================
+    # ESPN API endpoint
+    url = f"http://site.api.espn.com/apis/site/v2/sports/{sport_map[sport]}/scoreboard"
+    
+    # Format date as YYYYMMDD
+    date_str = date.strftime('%Y%m%d')
+    
+    params = {
+        'dates': date_str
+    }
+    
     try:
-        # Map sport codes to API organization codes
-        sport_to_org_code = {
-            'CBB': ['NCAAM', 'CBB', 'NCAA Basketball', 'ncaam', 'cbb'],
-            'CFB': ['CFB', 'NCAAF', 'NCAA Football', 'cfb', 'ncaaf']
-        }
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
         
-        # Fetch all organizations from API
-        st.info("🔍 Fetching organizations from srating.io API...")
-        all_orgs = fetch_data_from_srating('organization/read', {'inactive': '0'})
-        
-        if not all_orgs:
-            st.error("❌ No organizations returned from API")
-            return pd.DataFrame()
-        
-        # Find matching organization
-        matching_org = None
-        possible_codes = sport_to_org_code.get(sport_code, [])
-        
-        for org in all_orgs:
-            if not isinstance(org, dict):
-                continue
-            org_code = org.get('code', '')
-            if org_code in possible_codes:
-                matching_org = org
-                st.success(f"✅ Found: {org.get('name', 'Unknown')} ({org_code})")
-                break
-        
-        if not matching_org:
-            st.warning(f"⚠️ No organization found for {sport_code}")
-            st.info(f"Looking for: {', '.join(possible_codes)}")
-            
-            # Show what's available
-            with st.expander("Available Organizations"):
-                for org in all_orgs[:20]:  # Show first 20
-                    if isinstance(org, dict):
-                        st.write(f"- {org.get('name', 'Unknown')}: {org.get('code', 'N/A')}")
-            
-            return pd.DataFrame()
-        
-        org_id = matching_org.get('organization_id')
-        
-        # Fetch divisions
-        st.info(f"🔍 Fetching divisions for {matching_org.get('name')}...")
-        divisions = fetch_data_from_srating('division/read', {
-            'organization_id': org_id,
-            'inactive': '0'
-        })
-        
-        if not divisions:
-            st.warning("No divisions found")
-            return pd.DataFrame()
-        
-        st.success(f"✅ Found {len(divisions)} division(s)")
-        
-        # Fetch games from ALL divisions
-        all_games = []
-        date_str = selected_date.strftime('%Y-%m-%d')
-        
-        for div in divisions:
-            if not isinstance(div, dict):
-                continue
-                
-            div_id = div.get('division_id')
-            div_name = div.get('name', 'Unknown')
-            
-            try:
-                params = {
-                    'organization_id': org_id,
-                    'division_id': div_id,
-                    'start_date': date_str
-                }
-                
-                games = fetch_data_from_srating('game/getGames', params)
-                
-                if games:
-                    st.info(f"📅 {div_name}: {len(games)} game(s)")
-                    for game in games:
-                        game['division'] = div_name
-                    all_games.extend(games)
-                    
-            except Exception as e:
-                st.warning(f"⚠️ {div_name}: {str(e)}")
-                continue
-        
-        if not all_games:
-            st.info(f"ℹ️ No games scheduled for {sport_code} on {date_str}")
-            return pd.DataFrame()
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(all_games)
-        
-        # Standardize column names
-        column_mapping = {
-            'home_team_id': 'home_team',
-            'away_team_id': 'away_team',
-            'home_team_name': 'home_team',
-            'away_team_name': 'away_team',
-            'start_datetime': 'game_time',
-            'start_date': 'game_time'
-        }
-        
-        for old_col, new_col in column_mapping.items():
-            if old_col in df.columns and new_col not in df.columns:
-                df[new_col] = df[old_col]
-        
-        st.success(f"✅ TOTAL: {len(df)} REAL game(s) found!")
-        
-        return df
+        # ESPN returns games in data['events']
+        if 'events' in data:
+            return data['events']
+        return []
         
     except Exception as e:
-        st.error(f"❌ API Error: {e}")
-        import traceback
-        st.code(traceback.format_exc())
-        return pd.DataFrame()
+        raise requests.HTTPError(f"ESPN API error: {e}")
+        
+        # Raise an exception for bad status codes
+        response.raise_for_status()
+        
+        # Parse and return JSON response
+        data = response.json()
+        
+        # Convert dict values to list if response is a dict
+        if isinstance(data, dict):
+            return list(data.values())
+        return data
+        
+    except requests.exceptions.Timeout:
+        raise requests.HTTPError("API request timed out after 30 seconds")
+    except requests.exceptions.ConnectionError:
+        raise requests.HTTPError("Failed to connect to srating.io API")
+    except requests.exceptions.HTTPError as e:
+        raise requests.HTTPError(f"API request failed with status {response.status_code}: {e}")
+    except ValueError as e:
+        raise ValueError(f"Failed to parse API response as JSON: {e}")
 
 
+# ============================================================================
+# ELO RATING CALCULATION
+# ============================================================================
 
-
-def create_mock_features(games_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_elo(df: pd.DataFrame, K: int = 20, initial_elo: int = 1500) -> pd.DataFrame:
     """
-    Create mock features for prediction when historical data is unavailable.
+    Calculate running ELO ratings for all teams in the dataset.
+    
+    The ELO rating system updates team ratings based on game outcomes,
+    with larger updates for unexpected results. Formula:
+    
+    Expected Score: E_A = 1 / (1 + 10^((R_B - R_A)/400))
+    Updated Rating: R'_A = R_A + K * (S_A - E_A)
+    
+    Where:
+    - R_A, R_B are current ratings
+    - S_A is actual score (1 for win, 0 for loss)
+    - K is the update factor (sensitivity to new results)
     
     Args:
-        games_df: DataFrame with today's games
+        df: DataFrame with columns ['date', 'home_team', 'away_team', 
+            'home_score', 'away_score']
+        K: ELO K-factor (higher = more responsive to recent games)
+        initial_elo: Starting ELO rating for all teams
         
     Returns:
-        DataFrame with features for prediction
+        DataFrame with additional columns ['elo_home', 'elo_away', 
+        'elo_diff', 'home_win']
     """
+    # Create a copy to avoid modifying the original
+    df = df.copy()
+    
+    # Ensure date column is datetime
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'])
+    
+    # Sort by date to process games chronologically
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    # Initialize ELO ratings dictionary for all teams
+    elo_ratings = {}
+    
+    # Lists to store ELO ratings before each game
+    elo_home_list = []
+    elo_away_list = []
+    
+    for idx, row in df.iterrows():
+        home_team = row['home_team']
+        away_team = row['away_team']
+        
+        # Initialize teams with default ELO if first appearance
+        if home_team not in elo_ratings:
+            elo_ratings[home_team] = initial_elo
+        if away_team not in elo_ratings:
+            elo_ratings[away_team] = initial_elo
+        
+        # Get current ELO ratings (before this game)
+        elo_home = elo_ratings[home_team]
+        elo_away = elo_ratings[away_team]
+        
+        # Store pre-game ELO ratings
+        elo_home_list.append(elo_home)
+        elo_away_list.append(elo_away)
+        
+        # Calculate expected scores
+        expected_home = 1 / (1 + 10 ** ((elo_away - elo_home) / 400))
+        expected_away = 1 - expected_home
+        
+        # Determine actual scores (1 for win, 0.5 for tie, 0 for loss)
+        home_score = row['home_score']
+        away_score = row['away_score']
+        
+        if home_score > away_score:
+            actual_home = 1.0
+            actual_away = 0.0
+        elif home_score < away_score:
+            actual_home = 0.0
+            actual_away = 1.0
+        else:
+            actual_home = 0.5
+            actual_away = 0.5
+        
+        # Update ELO ratings
+        elo_ratings[home_team] = elo_home + K * (actual_home - expected_home)
+        elo_ratings[away_team] = elo_away + K * (actual_away - expected_away)
+    
+    # Add ELO columns to dataframe
+    df['elo_home'] = elo_home_list
+    df['elo_away'] = elo_away_list
+    df['elo_diff'] = df['elo_home'] - df['elo_away']
+    
+    # Add binary target: 1 if home team won, 0 otherwise
+    df['home_win'] = (df['home_score'] > df['away_score']).astype(int)
+    
+    return df
+
+
+# ============================================================================
+# FEATURE ENGINEERING
+# ============================================================================
+
+def calculate_rolling_stats(df: pd.DataFrame, team_col: str, 
+                           stat_cols: List[str], windows: List[int] = [5, 10]) -> pd.DataFrame:
+    """
+    Calculate rolling average statistics for teams.
+    
+    Args:
+        df: DataFrame sorted by date
+        team_col: Column name for team identifier
+        stat_cols: List of columns to calculate rolling stats for
+        windows: List of window sizes for rolling calculations
+        
+    Returns:
+        DataFrame with additional rolling average columns
+    """
+    df = df.copy()
+    
+    for window in windows:
+        for stat in stat_cols:
+            col_name = f'{team_col}_{stat}_rolling_{window}'
+            df[col_name] = df.groupby(team_col)[stat].transform(
+                lambda x: x.rolling(window=window, min_periods=1).mean()
+            )
+    
+    return df
+
+
+def calculate_rest_days(df: pd.DataFrame, team_col: str, date_col: str = 'date') -> pd.Series:
+    """
+    Calculate the number of rest days since the team's last game.
+    
+    Args:
+        df: DataFrame with date and team columns
+        team_col: Column name for team identifier
+        date_col: Column name for date
+        
+    Returns:
+        Series containing rest days for each game
+    """
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    
+    # Calculate days since last game
+    df['prev_game_date'] = df.groupby(team_col)[date_col].shift(1)
+    df['rest_days'] = (df[date_col] - df['prev_game_date']).dt.days
+    
+    # Fill first game with median rest days or 7 if not available
+    median_rest = df['rest_days'].median() if df['rest_days'].notna().any() else 7
+    df['rest_days'] = df['rest_days'].fillna(median_rest)
+    
+    return df['rest_days']
+
+
+def create_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Master feature engineering function that creates all features for modeling.
+    
+    This function orchestrates the creation of various features including:
+    - ELO ratings and differentials
+    - Rolling averages of team performance
+    - Rest days between games
+    - Home court advantage indicators
+    - Additional domain-specific features
+    
+    Args:
+        df: Raw DataFrame with game data
+        
+    Returns:
+        DataFrame with engineered features ready for modeling
+    """
+    # Ensure we have a copy
+    df = df.copy()
+    
+    # 1. Calculate ELO ratings (must be done first, chronologically)
+    df = calculate_elo(df, K=20)
+    
+    # 2. Calculate point differential
+    df['point_diff'] = df['home_score'] - df['away_score']
+    
+    # 3. Calculate rolling statistics for home teams
+    df = calculate_rolling_stats(
+        df, 
+        team_col='home_team',
+        stat_cols=['home_score', 'point_diff'],
+        windows=[3, 5, 10]
+    )
+    
+    # 4. Calculate rolling statistics for away teams
+    df = calculate_rolling_stats(
+        df,
+        team_col='away_team', 
+        stat_cols=['away_score'],
+        windows=[3, 5, 10]
+    )
+    
+    # 5. Calculate rest days
+    df['home_rest_days'] = calculate_rest_days(df, 'home_team')
+    df['away_rest_days'] = calculate_rest_days(df, 'away_team')
+    df['rest_diff'] = df['home_rest_days'] - df['away_rest_days']
+    
+    # 6. Create additional features
+    
+    # Home court advantage (binary)
+    df['is_home'] = 1  # All games have a home team
+    
+    # ELO momentum (change in recent games)
+    df['elo_home_momentum'] = df.groupby('home_team')['elo_home'].diff(periods=1).fillna(0)
+    df['elo_away_momentum'] = df.groupby('away_team')['elo_away'].diff(periods=1).fillna(0)
+    
+    # Win streak features (simplified)
+    df['home_win_streak'] = df.groupby('home_team')['home_win'].transform(
+        lambda x: x.rolling(window=5, min_periods=1).sum()
+    )
+    
+    # 7. Handle any remaining NaN values
+    df = df.fillna(df.median(numeric_only=True))
+    
+    return df
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_feature_columns() -> List[str]:
+    """
+    Return the list of feature column names used for modeling.
+    
+    Returns:
+        List of feature column names
+    """
+    return [
+        'elo_home',
+        'elo_away',
+        'elo_diff',
+        'home_team_home_score_rolling_3',
+        'home_team_home_score_rolling_5',
+        'home_team_home_score_rolling_10',
+        'home_team_point_diff_rolling_3',
+        'home_team_point_diff_rolling_5',
+        'home_team_point_diff_rolling_10',
+        'away_team_away_score_rolling_3',
+        'away_team_away_score_rolling_5',
+        'away_team_away_score_rolling_10',
+        'home_rest_days',
+        'away_rest_days',
+        'rest_diff',
+        'is_home',
+        'elo_home_momentum',
+        'elo_away_momentum',
+        'home_win_streak'
+    ]
+
+
+def prepare_prediction_features(home_team: str, away_team: str, 
+                                historical_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare features for a single game prediction.
+    
+    Args:
+        home_team: Name of the home team
+        away_team: Name of the away team
+        historical_df: DataFrame with historical games and features
+        
+    Returns:
+        Single-row DataFrame with features for prediction
+    """
+    # Get most recent stats for both teams
+    home_recent = historical_df[historical_df['home_team'] == home_team].iloc[-1] if len(historical_df[historical_df['home_team'] == home_team]) > 0 else None
+    away_recent = historical_df[historical_df['away_team'] == away_team].iloc[-1] if len(historical_df[historical_df['away_team'] == away_team]) > 0 else None
+    
+    # Create feature dictionary
+    features = {}
     feature_cols = get_feature_columns()
     
-    # Create features with realistic values
-    features_list = []
-    
-    for idx, game in games_df.iterrows():
-        # Generate semi-realistic feature values
-        elo_home = np.random.normal(1500, 100)
-        elo_away = np.random.normal(1500, 100)
-        
-        features = {
-            'elo_home': elo_home,
-            'elo_away': elo_away,
-            'elo_diff': elo_home - elo_away,
-            'home_team_home_score_rolling_3': np.random.normal(75, 8),
-            'home_team_home_score_rolling_5': np.random.normal(75, 6),
-            'home_team_home_score_rolling_10': np.random.normal(75, 5),
-            'home_team_point_diff_rolling_3': np.random.normal(3, 5),
-            'home_team_point_diff_rolling_5': np.random.normal(3, 4),
-            'home_team_point_diff_rolling_10': np.random.normal(3, 3),
-            'away_team_away_score_rolling_3': np.random.normal(72, 8),
-            'away_team_away_score_rolling_5': np.random.normal(72, 6),
-            'away_team_away_score_rolling_10': np.random.normal(72, 5),
-            'home_rest_days': np.random.randint(2, 8),
-            'away_rest_days': np.random.randint(2, 8),
-            'rest_diff': 0,
-            'is_home': 1,
-            'elo_home_momentum': np.random.normal(0, 20),
-            'elo_away_momentum': np.random.normal(0, 20),
-            'home_win_streak': np.random.randint(0, 5)
-        }
-        
-        features['rest_diff'] = features['home_rest_days'] - features['away_rest_days']
-        features_list.append(features)
-    
-    return pd.DataFrame(features_list)
-
-
-# ============================================================================
-# PREDICTION FUNCTIONS
-# ============================================================================
-
-def generate_predictions(games_df: pd.DataFrame, model, sport_code: str) -> pd.DataFrame:
-    """
-    Generate win probability predictions for all games.
-    
-    Args:
-        games_df: DataFrame with today's games
-        model: Trained XGBoost model
-        sport_code: Sport code for context
-        
-    Returns:
-        DataFrame with predictions added
-    """
-    if games_df.empty:
-        return games_df
-    
-    # Create features (using mock features for now)
-    features_df = create_mock_features(games_df)
-    
-    # Generate predictions
-    win_probabilities = model.predict_proba(features_df)[:, 1]
-    
-    # Add predictions to games dataframe
-    games_df = games_df.copy()
-    games_df['home_win_prob'] = win_probabilities
-    games_df['away_win_prob'] = 1 - win_probabilities
-    
-    # Determine predicted winner
-    games_df['predicted_winner'] = games_df.apply(
-        lambda row: row['home_team'] if row['home_win_prob'] > 0.5 else row['away_team'],
-        axis=1
-    )
-    
-    # Calculate confidence (distance from 50%)
-    games_df['confidence'] = abs(games_df['home_win_prob'] - 0.5) * 2
-    
-    # Categorize confidence level
-    games_df['confidence_level'] = pd.cut(
-        games_df['confidence'],
-        bins=[0, 0.3, 0.6, 1.0],
-        labels=['Low', 'Medium', 'High']
-    )
-    
-    return games_df
-
-
-# ============================================================================
-# UI COMPONENTS
-# ============================================================================
-
-def display_header():
-    """Display the application header."""
-    st.title("🏀 College Sports Prediction Engine")
-    st.markdown("""
-    Advanced machine learning predictions for college basketball and football games.
-    Powered by XGBoost and historical ELO ratings.
-    """)
-    st.markdown("---")
-
-
-def display_sidebar():
-    """Display the sidebar with controls."""
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        
-        # Sport selection with ALL 4 SPORTS
-        sport = st.selectbox(
-            "Select Sport",
-            options=['NBA', 'NFL', 'CBB', 'CFB'],
-            format_func=lambda x: {
-                'NBA': '🏀 NBA Basketball',
-                'NFL': '🏈 NFL Football',
-                'CBB': '🏀 College Basketball',
-                'CFB': '🏈 College Football'
-            }[x],
-            key='sport_select'
-        )
-        
-        # Date selection
-        selected_date = st.date_input(
-            "Select Date",
-            value=datetime.now(),
-            min_value=datetime.now() - timedelta(days=7),
-            max_value=datetime.now() + timedelta(days=30),
-            key='date_select'
-        )
-        
-        st.markdown("---")
-        
-        # Model info
-        st.subheader("📊 Model Info")
-        try:
-            model = load_model(sport)
-            st.success("✓ Model loaded")
-            
-            # Display feature importance file if exists
-            sport_file_names = {
-                'CBB': 'college_basketball',
-                'CFB': 'college_football',
-                'NBA': 'nba_basketball',
-                'NFL': 'nfl_football'
-            }
-            importance_file = f"model/{sport_file_names[sport]}_feature_importance.csv"
-            if os.path.exists(importance_file):
-                with st.expander("View Feature Importance"):
-                    importance_df = pd.read_csv(importance_file)
-                    st.dataframe(
-                        importance_df.head(10),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-        except FileNotFoundError:
-            st.error("❌ Model not found")
-            st.info("Run train_model.py first")
-        
-        st.markdown("---")
-        
-        # Additional settings
-        st.subheader("🎯 Display Options")
-        min_confidence = st.slider(
-            "Minimum Confidence",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.0,
-            step=0.1,
-            help="Filter predictions by confidence level"
-        )
-        
-        show_all = st.checkbox("Show All Games", value=True)
-        
-        return sport, selected_date, min_confidence, show_all
-
-
-def display_predictions_table(predictions_df: pd.DataFrame):
-    """Display predictions in a formatted table."""
-    if predictions_df.empty:
-        st.info("No games found for the selected date.")
-        return
-    
-    # Prepare display dataframe
-    display_df = predictions_df[[
-        'away_team', 'home_team', 'predicted_winner',
-        'home_win_prob', 'confidence_level'
-    ]].copy()
-    
-    # Format probabilities as percentages
-    display_df['home_win_prob'] = display_df['home_win_prob'].apply(lambda x: f"{x*100:.1f}%")
-    
-    # Rename columns for display
-    display_df.columns = [
-        'Away Team', 'Home Team', 'Predicted Winner',
-        'Home Win Probability', 'Confidence'
-    ]
-    
-    # Display with styling
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        height=400
-    )
-
-
-def display_high_confidence_picks(predictions_df: pd.DataFrame, threshold: float = 0.65):
-    """Display high-confidence picks in a highlighted section."""
-    high_confidence = predictions_df[predictions_df['confidence'] >= threshold].copy()
-    
-    if high_confidence.empty:
-        st.info(f"No high-confidence picks (≥{threshold*100:.0f}%) for this date.")
-        return
-    
-    st.subheader(f"⭐ High-Confidence Picks ({len(high_confidence)} games)")
-    
-    # Sort by confidence
-    high_confidence = high_confidence.sort_values('confidence', ascending=False)
-    
-    # Display each pick in a card-like format
-    for idx, game in high_confidence.iterrows():
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
-        with col1:
-            matchup = f"**{game['away_team']}** @ **{game['home_team']}**"
-            st.markdown(matchup)
-            if 'game_time' in game:
-                st.caption(f"🕐 {game['game_time'].strftime('%I:%M %p')}")
-        
-        with col2:
-            winner = game['predicted_winner']
-            prob = game['home_win_prob'] if winner == game['home_team'] else game['away_win_prob']
-            st.metric("Pick", winner)
-            st.caption(f"{prob*100:.1f}% confidence")
-        
-        with col3:
-            confidence_pct = game['confidence'] * 100
-            st.metric("Confidence", f"{confidence_pct:.0f}%")
-            
-            # Color-code confidence
-            if confidence_pct >= 80:
-                st.success("Very High")
-            elif confidence_pct >= 65:
-                st.info("High")
-        
-        st.markdown("---")
-
-
-def display_statistics(predictions_df: pd.DataFrame):
-    """Display summary statistics."""
-    if predictions_df.empty:
-        return
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Games", len(predictions_df))
-    
-    with col2:
-        high_conf = len(predictions_df[predictions_df['confidence_level'] == 'High'])
-        st.metric("High Confidence", high_conf)
-    
-    with col3:
-        avg_confidence = predictions_df['confidence'].mean() * 100
-        st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
-    
-    with col4:
-        home_favored = len(predictions_df[predictions_df['home_win_prob'] > 0.5])
-        st.metric("Home Favored", home_favored)
-
-
-# ============================================================================
-# MAIN APPLICATION
-# ============================================================================
-
-def main():
-    """Main application function."""
-    
-    # Display header
-    display_header()
-    
-    # Display sidebar and get settings
-    sport, selected_date, min_confidence, show_all = display_sidebar()
-    
-    # Main content area
-    st.header(f"📅 Predictions for {selected_date.strftime('%B %d, %Y')}")
-    
-    # Fetch games button
-    if st.button("🔍 Fetch Games & Generate Predictions", type="primary", use_container_width=True):
-        
-        with st.spinner("Fetching REAL games from srating.io API..."):
-            # Fetch today's games - REAL DATA ONLY
-            games_df = fetch_todays_games(
-                sport_code=sport,
-                selected_date=datetime.combine(selected_date, datetime.min.time())
-            )
-        
-        if games_df.empty:
-            st.warning("No games found for the selected date.")
-            return
-        
-        with st.spinner("Generating predictions..."):
-            try:
-                # Load model
-                model = load_model(sport)
-                
-                # Generate predictions
-                predictions_df = generate_predictions(games_df, model, sport)
-                
-                # Apply confidence filter
-                if min_confidence > 0:
-                    predictions_df = predictions_df[predictions_df['confidence'] >= min_confidence]
-                
-                # Store in session state
-                st.session_state['predictions'] = predictions_df
-                
-            except Exception as e:
-                st.error(f"Error generating predictions: {e}")
-                return
-    
-    # Display predictions if available
-    if 'predictions' in st.session_state:
-        predictions_df = st.session_state['predictions']
-        
-        if not predictions_df.empty:
-            # Display statistics
-            st.markdown("### 📊 Summary Statistics")
-            display_statistics(predictions_df)
-            
-            st.markdown("---")
-            
-            # Display high-confidence picks
-            display_high_confidence_picks(predictions_df, threshold=0.65)
-            
-            st.markdown("---")
-            
-            # Display all predictions
-            if show_all:
-                st.markdown("### 📋 All Predictions")
-                display_predictions_table(predictions_df)
+    for col in feature_cols:
+        if col.startswith('home_') or col.startswith('elo_home'):
+            features[col] = home_recent[col] if home_recent is not None else 0
+        elif col.startswith('away_') or col.startswith('elo_away'):
+            features[col] = away_recent[col] if away_recent is not None else 0
+        elif col == 'elo_diff':
+            features[col] = features.get('elo_home', 1500) - features.get('elo_away', 1500)
         else:
-            st.info("No predictions match the selected filters.")
+            features[col] = 0
     
-    # Footer
-    st.markdown("---")
-    st.caption("⚠️ For entertainment purposes only. Always gamble responsibly.")
-    st.caption("Predictions based on historical data and machine learning models.")
+    return pd.DataFrame([features])
 
 
 if __name__ == "__main__":
-    main()
+    # Test code for development
+    print("Utils module loaded successfully")
+    print(f"Feature columns: {get_feature_columns()}")
