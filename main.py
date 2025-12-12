@@ -13,13 +13,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import joblib
 from typing import Dict, Optional
-
-# Import joblib from sklearn (more reliable on Streamlit Cloud)
-try:
-    from sklearn.externals import joblib
-except ImportError:
-    import joblib
 
 # Import utility functions
 from utils import (
@@ -298,11 +293,16 @@ def display_sidebar():
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        # Sport selection
+        # Sport selection with ALL 4 SPORTS
         sport = st.selectbox(
             "Select Sport",
-            options=['CBB', 'CFB'],
-            format_func=lambda x: '🏀 College Basketball' if x == 'CBB' else '🏈 College Football',
+            options=['NBA', 'NFL', 'CBB', 'CFB'],
+            format_func=lambda x: {
+                'NBA': '🏀 NBA Basketball',
+                'NFL': '🏈 NFL Football',
+                'CBB': '🏀 College Basketball',
+                'CFB': '🏈 College Football'
+            }[x],
             key='sport_select'
         )
         
